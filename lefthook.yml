@@ -1,0 +1,31 @@
+# Git hooks managed by lefthook (https://github.com/evilmartians/lefthook)
+
+pre-commit:
+  parallel: true
+  commands:
+    trailing-whitespace:
+      glob: "*"
+      run: .lefthook/pre-commit/trailing-whitespace.sh {staged_files}
+      stage_fixed: true
+
+    end-of-file-fixer:
+      glob: "*"
+      run: .lefthook/pre-commit/end-of-file-fixer.sh {staged_files}
+      stage_fixed: true
+
+    shfmt:
+      glob: "*.sh"
+      run: .lefthook/pre-commit/shfmt.sh {staged_files}
+      stage_fixed: true
+
+    shellcheck:
+      glob: "*.sh"
+      run: .lefthook/pre-commit/shellcheck.sh {staged_files}
+
+    check-json:
+      glob: "*.json"
+      run: .lefthook/pre-commit/check-json.sh {staged_files}
+
+    yamllint:
+      glob: "*.{yml,yaml}"
+      run: .lefthook/pre-commit/yamllint.sh {staged_files}
