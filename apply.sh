@@ -3,6 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETTINGS_DIR="${SCRIPT_DIR}/settings"
+RULESETS_DIR="${SETTINGS_DIR}/rulesets"
+
+# Basenames under settings/rulesets/ (<name>.json). Add entries when introducing
+# additional ruleset definition files.
+RULESET_DEFINITIONS=("default-branch-protection")
 
 JQ_FILTER_TO_DESIRED="$(
   cat <<'EOF'
@@ -133,6 +138,107 @@ is_public_repo() {
   [[ "$(jq -r '.private' <<<"$REPO_JSON")" != "true" ]]
 }
 
+fetch_rulesets_index() {
+  local response
+  if response="$(gh api --paginate "repos/${TARGET}/rulesets?includes_parents=false" 2>&1)"; then
+    printf '%s' "$response"
+    return 0
+  fi
+  if echo "$response" | grep -q "Upgrade to GitHub Pro"; then
+    cat >&2 <<EOF
+Error: Rulesets API is not available for ${TARGET}.
+       GitHub Free does not support rulesets on private repositories.
+       Either upgrade to GitHub Pro or make ${TARGET} public.
+EOF
+  else
+    echo "Error: failed to query rulesets API:" >&2
+    echo "$response" >&2
+  fi
+  exit 1
+}
+
+ruleset_id_in_index() {
+  local name="$1"
+  local index_json="$2"
+  jq -r --arg name "$name" '
+    [.[] | select(.source_type == "Repository" and .name == $name)] | first | .id // empty
+  ' <<<"$index_json"
+}
+
+upsert_ruleset() {
+  local name="$1"
+  local json="$2"
+  local existing_id created
+  existing_id="$(ruleset_id_in_index "$name" "$RULESETS_INDEX")"
+
+  if $DRY_RUN; then
+    if [[ -z "$existing_id" ]]; then
+      print_status "$COLOR_STATUS_WOULD" "(would create: ${name})"
+    else
+      print_status "$COLOR_STATUS_WOULD" "(would update: ${name}, id=${existing_id})"
+    fi
+    return
+  fi
+
+  if [[ -z "$existing_id" ]]; then
+    created="$(printf '%s' "$json" | gh api -X POST "repos/${TARGET}/rulesets" --input -)"
+    RULESETS_INDEX="$(jq --argjson created "$created" '
+      . + [{
+        id: $created.id,
+        name: $created.name,
+        source_type: "Repository"
+      }]
+    ' <<<"$RULESETS_INDEX")"
+    print_status "$COLOR_STATUS_OK" "(created: ${name})"
+  else
+    printf '%s' "$json" | gh api -X PUT "repos/${TARGET}/rulesets/${existing_id}" --input - >/dev/null
+    print_status "$COLOR_STATUS_OK" "(updated: ${name}, id=${existing_id})"
+  fi
+}
+
+apply_rulesets_in_file() {
+  local file="$1"
+  local label="$2"
+  local count i rs_json rs_name
+
+  if [[ ! -f "$file" ]]; then
+    echo "Error: ruleset definition not found: ${file}" >&2
+    exit 1
+  fi
+  if ! jq -e '.rulesets | type == "array"' "$file" >/dev/null; then
+    echo "Error: ${file} must contain a \"rulesets\" array" >&2
+    exit 1
+  fi
+
+  count="$(jq '.rulesets | length' "$file")"
+  if [[ "$count" -eq 0 ]]; then
+    echo "    ${label}: (no rulesets defined)"
+    return
+  fi
+
+  for ((i = 0; i < count; i++)); do
+    rs_json="$(jq -c ".rulesets[$i]" "$file")"
+    rs_name="$(jq -r ".rulesets[$i].name" "$file")"
+    echo "    ${rs_name} (${label}.json)"
+    upsert_ruleset "$rs_name" "$rs_json"
+  done
+}
+
+apply_rulesets_from_settings() {
+  local def
+
+  if [[ ${#RULESET_DEFINITIONS[@]} -eq 0 ]]; then
+    print_status "$COLOR_STATUS_SKIP" "(no ruleset definitions configured)"
+    return
+  fi
+
+  RULESETS_INDEX="$(fetch_rulesets_index)"
+
+  for def in "${RULESET_DEFINITIONS[@]}"; do
+    apply_rulesets_in_file "${RULESETS_DIR}/${def}.json" "$def"
+  done
+}
+
 usage() {
   cat >&2 <<EOF
 Usage: $(basename "$0") <owner>/<repo> [--dry-run]
@@ -149,6 +255,7 @@ The target repository must already exist.
 Repository-type skips (reported during apply):
   - Secret scanning: private repos without Advanced Security
   - Private vulnerability reporting: public repos only
+  - Rulesets: private repos on GitHub Free (requires Pro or public repo)
 EOF
   exit 1
 }
@@ -206,7 +313,7 @@ if $DRY_RUN; then
   echo "    DRY-RUN MODE (no API writes)"
 fi
 
-echo "--> 1/7 General settings"
+echo "--> 1/8 General settings"
 GENERAL_SETTINGS_JSON="$(build_general_settings_json)"
 if $DRY_RUN; then
   echo "$GENERAL_SETTINGS_JSON" | dry_run_json_diff "repos/${TARGET}" "-" "$REPO_JSON"
@@ -215,11 +322,11 @@ else
 fi
 
 enable_feature \
-  "2/7 Enable release immutability" \
+  "2/8 Enable release immutability" \
   "repos/${TARGET}/immutable-releases" \
   "(would enable release immutability)"
 
-echo "--> 3/7 Actions permissions"
+echo "--> 3/8 Actions permissions"
 ACTIONS_PERMISSIONS_JSON=""
 CURRENT_ALLOWED_ACTIONS=""
 if $DRY_RUN; then
@@ -235,7 +342,7 @@ fi
 
 ALLOWED_ACTIONS="$(jq -r '.allowed_actions' "${SETTINGS_DIR}/actions.json")"
 if [[ "$ALLOWED_ACTIONS" == "selected" ]]; then
-  echo "--> 4/7 Actions allowed actions (selected)"
+  echo "--> 4/8 Actions allowed actions (selected)"
   if $DRY_RUN; then
     [[ -n "$CURRENT_ALLOWED_ACTIONS" ]] ||
       CURRENT_ALLOWED_ACTIONS="$(gh api "repos/${TARGET}/actions/permissions" | jq -r '.allowed_actions')"
@@ -253,30 +360,33 @@ if [[ "$ALLOWED_ACTIONS" == "selected" ]]; then
       --input "${SETTINGS_DIR}/actions-selected.json" >/dev/null
   fi
 else
-  echo "--> 4/7 Actions allowed actions (selected)"
+  echo "--> 4/8 Actions allowed actions (selected)"
   print_status "$COLOR_STATUS_OK" "(skipped; allowed_actions is \"${ALLOWED_ACTIONS}\")"
 fi
 
 if is_public_repo; then
   enable_feature \
-    "5/7 Enable private vulnerability reporting" \
+    "5/8 Enable private vulnerability reporting" \
     "repos/${TARGET}/private-vulnerability-reporting" \
     "(would enable private vulnerability reporting)"
 else
   skip_feature \
-    "5/7 Enable private vulnerability reporting" \
+    "5/8 Enable private vulnerability reporting" \
     "(skipped; public repositories only)"
 fi
 
 enable_feature \
-  "6/7 Enable Dependabot alerts" \
+  "6/8 Enable Dependabot alerts" \
   "repos/${TARGET}/vulnerability-alerts" \
   "(would enable Dependabot vulnerability alerts)" \
   http204
 
 enable_feature \
-  "7/7 Enable Dependabot security updates" \
+  "7/8 Enable Dependabot security updates" \
   "repos/${TARGET}/automated-security-fixes" \
   "(would enable Dependabot automated security fixes)"
+
+echo "--> 8/8 Rulesets"
+apply_rulesets_from_settings
 
 echo "==> Done."
