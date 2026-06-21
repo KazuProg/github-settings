@@ -47,7 +47,7 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
 | 5   | Private vulnerability reporting の有効化（public のみ） | `PUT .../private-vulnerability-reporting` |
 | 6   | Dependabot alerts の有効化                              | `PUT .../vulnerability-alerts`            |
 | 7   | Dependabot security updates の有効化                    | `PUT .../automated-security-fixes`        |
-| 8   | Rulesets（default branch 保護）                         | `settings/rulesets/default-branch-protection.json`  |
+| 8   | Rulesets                                                | `settings/rulesets/*.json`（常時適用 + `--with-rulesets` で任意） |
 
 ### 現在の推奨値の概要
 
@@ -71,13 +71,17 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
 - 許可範囲: `selected`（GitHub 公式・検証済み publisher のみ）
 - カスタム Action パターン: なし
 
-**Rulesets**（ステップ 8, `settings/rulesets/default-branch-protection.json`）
+**Rulesets**（ステップ 8）
 
-- 対象: リポジトリの **default branch**（`~DEFAULT_BRANCH`。`main` 固定ではない）
-- 有効ルール: ブランチ作成・削除・force push 禁止、PR 経由 merge のみ
-- merge 方法: merge commit のみ（一般設定の squash / rebase OFF と揃える）
-- Approve 数 0、レビュースレッド解決必須
-- 追加の ruleset 定義ファイルは `apply.sh` 冒頭の `RULESET_DEFINITIONS` に basename を足して拡張する
+- 常時適用: `settings/rulesets/default-branch-protection.json`
+  - 対象: リポジトリの **default branch**（`~DEFAULT_BRANCH`。`main` 固定ではない）
+  - 有効ルール: ブランチ作成・削除・force push 禁止、PR 経由 merge のみ
+  - merge 方法: merge commit のみ（一般設定の squash / rebase OFF と揃える）
+  - Approve 数 0、レビュースレッド解決必須
+- 任意適用: `settings/rulesets/*.json` のうち `REQUIRED_RULESETS` に含まれないファイル（`--with-rulesets <basename>`）
+  - 例: `commit-message-check.json` — `.github/workflows/commit-message-check.yml` を配置したリポジトリ向け
+  - default branch への merge 前に `commit-message-check` ステータスチェックを必須化
+- 常時適用は `rulesets-common.sh` の `REQUIRED_RULESETS`、それ以外は `--with-rulesets <basename>`
 
 各 JSON の値を編集すれば、適用内容をリポジトリやチームの方針に合わせて変更できる。
 
@@ -137,12 +141,14 @@ lefthook run pre-commit --all-files
 .
 ├── setup.sh              # 対話型セットアップ
 ├── apply.sh              # 設定適用（--dry-run 対応）
+├── rulesets-common.sh    # 常時適用 ruleset 定義（apply.sh / setup.sh 共有）
 └── settings/
     ├── settings.json                  # 一般設定
     ├── actions.json                   # Actions 権限
     ├── actions-selected.json          # 許可する Actions（selected 時）
     └── rulesets/
-        └── default-branch-protection.json  # default branch 保護 Ruleset
+        ├── default-branch-protection.json
+        └── commit-message-check.json       # 任意適用
 ```
 
 ## トラブルシューティング
