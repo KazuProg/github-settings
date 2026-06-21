@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SETTINGS_DIR="${SCRIPT_DIR}/settings"
-RULESETS_DIR="${SETTINGS_DIR}/rulesets"
+cd "$(dirname "$0")"
 
-# Basenames under settings/rulesets/ (<name>.json). Add entries when introducing
-# additional ruleset definition files.
-RULESET_DEFINITIONS=("default-branch-protection")
+# shellcheck source=rulesets-common.sh
+source rulesets-common.sh
 
 JQ_FILTER_TO_DESIRED="$(
   cat <<'EOF'
@@ -224,30 +221,66 @@ apply_rulesets_in_file() {
   done
 }
 
-apply_rulesets_from_settings() {
-  local def
+append_with_rulesets() {
+  local raw="$1"
+  local part file
+  IFS=',' read -ra parts <<<"$raw"
+  for part in "${parts[@]}"; do
+    part="${part#"${part%%[![:space:]]*}"}"
+    part="${part%"${part##*[![:space:]]}"}"
+    if [[ -z "$part" ]]; then
+      continue
+    fi
+    file="$(ruleset_definition_file "$part")"
+    if [[ ! -f "$file" ]]; then
+      echo "Error: ruleset not found: ${file}" >&2
+      exit 1
+    fi
+    if is_required_ruleset "$part"; then
+      echo "Error: ${part} is a required ruleset (always applied)" >&2
+      exit 1
+    fi
+    WITH_RULESETS+=("$part")
+  done
+}
 
-  if [[ ${#RULESET_DEFINITIONS[@]} -eq 0 ]]; then
-    print_status "$COLOR_STATUS_SKIP" "(no ruleset definitions configured)"
-    return
-  fi
+apply_rulesets_from_settings() {
+  local def file applied=false
 
   RULESETS_INDEX="$(fetch_rulesets_index)"
 
-  for def in "${RULESET_DEFINITIONS[@]}"; do
-    apply_rulesets_in_file "${RULESETS_DIR}/${def}.json" "$def"
+  for def in "${REQUIRED_RULESETS[@]}"; do
+    file="$(ruleset_definition_file "$def")"
+    if [[ ! -f "$file" ]]; then
+      echo "Error: required ruleset not found: ${file}" >&2
+      exit 1
+    fi
+    applied=true
+    apply_rulesets_in_file "$file" "$def"
   done
+
+  for def in "${WITH_RULESETS[@]}"; do
+    applied=true
+    apply_rulesets_in_file "$(ruleset_definition_file "$def")" "$def"
+  done
+
+  if ! $applied; then
+    print_status "$COLOR_STATUS_SKIP" "(no ruleset definitions configured)"
+  fi
 }
 
 usage() {
   cat >&2 <<EOF
-Usage: $(basename "$0") <owner>/<repo> [--dry-run]
+Usage: $(basename "$0") <owner>/<repo> [--dry-run] [--with-rulesets <name>[,<name>...]]
 
 Apply repo-setup GitHub repository settings to the target repository.
 
 With --dry-run, no API write is performed. Settings steps show an actual
 diff against the live repository. Enable-only steps report whether each
 feature is already enabled.
+
+Optional rulesets (--with-rulesets):
+  Basenames under settings/rulesets/ not listed in REQUIRED_RULESETS
 
 Requires gh (authenticated with the 'repo' scope) and jq.
 The target repository must already exist.
@@ -262,6 +295,7 @@ EOF
 
 TARGET=""
 DRY_RUN=false
+WITH_RULESETS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -271,6 +305,14 @@ while [[ $# -gt 0 ]]; do
   --dry-run)
     DRY_RUN=true
     shift
+    ;;
+  --with-rulesets)
+    if [[ $# -lt 2 ]]; then
+      echo "Error: --with-rulesets requires a value" >&2
+      exit 1
+    fi
+    append_with_rulesets "$2"
+    shift 2
     ;;
   --*)
     echo "Error: unknown option: $1" >&2

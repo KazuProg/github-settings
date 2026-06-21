@@ -1,8 +1,34 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APPLY="${SCRIPT_DIR}/apply.sh"
+cd "$(dirname "$0")"
+APPLY="./apply.sh"
+
+# shellcheck source=rulesets-common.sh
+source rulesets-common.sh
+
+discover_optional_ruleset_definitions() {
+  local f label names=()
+  OPTIONAL_RULESET_DEFINITIONS=()
+
+  shopt -s nullglob
+  for f in "${RULESETS_DIR}"/*.json; do
+    label="$(basename "$f" .json)"
+    if is_required_ruleset "$label"; then
+      continue
+    fi
+    names+=("$label")
+  done
+  if ((${#names[@]} > 0)); then
+    readarray -t OPTIONAL_RULESET_DEFINITIONS < <(printf '%s\n' "${names[@]}" | sort)
+  fi
+  shopt -u nullglob
+}
+
+ruleset_prompt_label() {
+  local def="$1"
+  jq -r '.rulesets[0].name // "'"$def"'"' "$(ruleset_definition_file "$def")"
+}
 
 require_command() {
   local cmd="$1"
@@ -55,6 +81,9 @@ prompt_yes_no() {
 require_command gh
 require_command jq
 
+OPTIONAL_RULESET_DEFINITIONS=()
+discover_optional_ruleset_definitions
+
 echo "==> repo-setup interactive setup"
 echo ""
 
@@ -72,21 +101,54 @@ REPO_VISIBILITY="$(gh api "repos/${TARGET}" --jq 'if .private then "private" els
 echo "  -> ${TARGET} (${REPO_VISIBILITY})"
 echo ""
 
+build_apply_args() {
+  APPLY_ARGS=("$TARGET")
+  if ((${#ENABLED_OPTIONAL_RULESETS[@]} > 0)); then
+    local joined
+    joined="$(
+      IFS=,
+      echo "${ENABLED_OPTIONAL_RULESETS[*]}"
+    )"
+    APPLY_ARGS+=(--with-rulesets "$joined")
+  fi
+}
+
+ENABLED_OPTIONAL_RULESETS=()
+
+echo "==> Optional rulesets"
+if ((${#OPTIONAL_RULESET_DEFINITIONS[@]} == 0)); then
+  echo "  (none)"
+else
+  for def in "${OPTIONAL_RULESET_DEFINITIONS[@]}"; do
+    label="$(ruleset_prompt_label "$def")"
+    if prompt_yes_no "  Enable ${label}?" n; then
+      ENABLED_OPTIONAL_RULESETS+=("$def")
+    fi
+  done
+fi
+echo ""
+
+build_apply_args
+
 echo "==> Planned command:"
-printf "    ./apply.sh %q\n" "$TARGET"
+printf -v APPLY_CMD './apply.sh'
+for arg in "${APPLY_ARGS[@]}"; do
+  APPLY_CMD+=" $(printf '%q' "$arg")"
+done
+printf "    %s\n" "$APPLY_CMD"
 echo ""
 
 DRY_RUN_RAN=false
 if prompt_yes_no "Run --dry-run first?" y; then
   DRY_RUN_RAN=true
   echo ""
-  "$APPLY" "$TARGET" --dry-run
+  "$APPLY" "${APPLY_ARGS[@]}" --dry-run
   echo ""
 fi
 
 if prompt_yes_no "Apply now?" n; then
   echo ""
-  "$APPLY" "$TARGET"
+  "$APPLY" "${APPLY_ARGS[@]}"
 else
   if $DRY_RUN_RAN; then
     echo "Skipped apply (dry-run only)."
