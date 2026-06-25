@@ -21,8 +21,10 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
 
 1. 対象リポジトリ（`owner/repo`）の入力
 2. リポジトリの存在確認（public / private を表示）
-3. `--dry-run` の実行（任意・デフォルト: はい）
-4. 本番適用の実行（任意・デフォルト: いいえ）
+3. Dependabot alerts + security updates を有効化するかの確認（デフォルト: はい）
+4. 任意 rulesets の有効化確認（リポジトリ単位）
+5. `--dry-run` の実行（任意・デフォルト: はい）
+6. 本番適用の実行（任意・デフォルト: いいえ）
 
 ## 直接実行
 
@@ -38,16 +40,16 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
 
 ## 適用される設定（8 ステップ）
 
-| #   | 項目                                                    | 設定ファイル / API                        |
-| --- | ------------------------------------------------------- | ----------------------------------------- |
-| 1   | 一般設定（Issues、マージ方法、Secret scanning など）    | `settings/settings.json`                  |
-| 2   | Release immutability の有効化                           | `PUT .../immutable-releases`              |
-| 3   | Actions 権限                                            | `settings/actions.json`                   |
-| 4   | 許可する Actions（`allowed_actions: selected` の場合）  | `settings/actions-selected.json`          |
-| 5   | Private vulnerability reporting の有効化（public のみ） | `PUT .../private-vulnerability-reporting` |
-| 6   | Dependabot alerts の有効化                              | `PUT .../vulnerability-alerts`            |
-| 7   | Dependabot security updates の有効化                    | `PUT .../automated-security-fixes`        |
-| 8   | Rulesets                                                | `settings/rulesets/*.json`（常時適用 + `--with-rulesets` で任意） |
+| #   | 項目                                                                       | 設定ファイル / API                                                |
+| --- | -------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 1   | 一般設定（Issues、マージ方法、Secret scanning など）                       | `settings/settings.json`                                          |
+| 2   | Release immutability の有効化                                              | `PUT .../immutable-releases`                                      |
+| 3   | Actions 権限                                                               | `settings/actions.json`                                           |
+| 4   | 許可する Actions（`allowed_actions: selected` の場合）                     | `settings/actions-selected.json`                                  |
+| 5   | Private vulnerability reporting の有効化（public のみ）                    | `PUT .../private-vulnerability-reporting`                         |
+| 6   | Dependabot alerts の有効化（`--no-dependabot` 指定時はスキップ）           | `PUT .../vulnerability-alerts`                                    |
+| 7   | Dependabot security updates の有効化（`--no-dependabot` 指定時はスキップ） | `PUT .../automated-security-fixes`                                |
+| 8   | Rulesets                                                                   | `settings/rulesets/*.json`（常時適用 + `--with-rulesets` で任意） |
 
 ### 現在の推奨値の概要
 

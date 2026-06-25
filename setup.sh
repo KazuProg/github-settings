@@ -105,6 +105,9 @@ echo ""
 
 build_apply_args() {
   APPLY_ARGS=("$TARGET")
+  if ! $ENABLE_DEPENDABOT; then
+    APPLY_ARGS+=(--no-dependabot)
+  fi
   if ((${#ENABLED_OPTIONAL_RULESETS[@]} > 0)); then
     local joined
     joined="$(
@@ -114,6 +117,13 @@ build_apply_args() {
     APPLY_ARGS+=(--with-rulesets "$joined")
   fi
 }
+
+if prompt_yes_no "Enable Dependabot alerts + security updates?" y; then
+  ENABLE_DEPENDABOT=true
+else
+  ENABLE_DEPENDABOT=false
+fi
+echo ""
 
 ENABLED_OPTIONAL_RULESETS=()
 

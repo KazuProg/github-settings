@@ -273,7 +273,7 @@ apply_rulesets_from_settings() {
 
 usage() {
   cat >&2 <<EOF
-Usage: $(basename "$0") <owner>/<repo> [--dry-run] [--with-rulesets <name>[,<name>...]]
+Usage: $(basename "$0") <owner>/<repo> [--dry-run] [--no-dependabot] [--with-rulesets <name>[,<name>...]]
 
 Apply repo-setup GitHub repository settings to the target repository.
 
@@ -284,12 +284,16 @@ feature is already enabled.
 Optional rulesets (--with-rulesets):
   Basenames under settings/rulesets/ not listed in REQUIRED_RULESETS
 
+With --no-dependabot, steps 6/8 and 7/8 (Dependabot alerts and security
+updates) are skipped.
+
 Requires gh (authenticated with the 'repo' scope) and jq.
 The target repository must already exist.
 
 Repository-type skips (reported during apply):
   - Secret scanning: private repos without Advanced Security
   - Private vulnerability reporting: public repos only
+  - Dependabot alerts/security updates: when --no-dependabot is given
   - Rulesets: private repos on GitHub Free (requires Pro or public repo)
 EOF
   exit 1
@@ -297,6 +301,7 @@ EOF
 
 TARGET=""
 DRY_RUN=false
+NO_DEPENDABOT=false
 WITH_RULESETS=()
 
 while [[ $# -gt 0 ]]; do
@@ -306,6 +311,10 @@ while [[ $# -gt 0 ]]; do
     ;;
   --dry-run)
     DRY_RUN=true
+    shift
+    ;;
+  --no-dependabot)
+    NO_DEPENDABOT=true
     shift
     ;;
   --with-rulesets)
@@ -419,16 +428,25 @@ else
     "(skipped; public repositories only)"
 fi
 
-enable_feature \
-  "6/8 Enable Dependabot alerts" \
-  "repos/${TARGET}/vulnerability-alerts" \
-  "(would enable Dependabot vulnerability alerts)" \
-  http204
+if $NO_DEPENDABOT; then
+  skip_feature \
+    "6/8 Enable Dependabot alerts" \
+    "(skipped; --no-dependabot)"
+  skip_feature \
+    "7/8 Enable Dependabot security updates" \
+    "(skipped; --no-dependabot)"
+else
+  enable_feature \
+    "6/8 Enable Dependabot alerts" \
+    "repos/${TARGET}/vulnerability-alerts" \
+    "(would enable Dependabot vulnerability alerts)" \
+    http204
 
-enable_feature \
-  "7/8 Enable Dependabot security updates" \
-  "repos/${TARGET}/automated-security-fixes" \
-  "(would enable Dependabot automated security fixes)"
+  enable_feature \
+    "7/8 Enable Dependabot security updates" \
+    "repos/${TARGET}/automated-security-fixes" \
+    "(would enable Dependabot automated security fixes)"
+fi
 
 echo "--> 8/8 Rulesets"
 apply_rulesets_from_settings
