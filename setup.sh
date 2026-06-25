@@ -20,7 +20,9 @@ discover_optional_ruleset_definitions() {
     names+=("$label")
   done
   if ((${#names[@]} > 0)); then
-    readarray -t OPTIONAL_RULESET_DEFINITIONS < <(printf '%s\n' "${names[@]}" | sort)
+    while IFS= read -r line; do
+      OPTIONAL_RULESET_DEFINITIONS+=("$line")
+    done < <(printf '%s\n' "${names[@]}" | sort)
   fi
   shopt -u nullglob
 }
