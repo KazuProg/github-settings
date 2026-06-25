@@ -259,10 +259,12 @@ apply_rulesets_from_settings() {
     apply_rulesets_in_file "$file" "$def"
   done
 
-  for def in "${WITH_RULESETS[@]}"; do
-    applied=true
-    apply_rulesets_in_file "$(ruleset_definition_file "$def")" "$def"
-  done
+  if ((${#WITH_RULESETS[@]} > 0)); then
+    for def in "${WITH_RULESETS[@]}"; do
+      applied=true
+      apply_rulesets_in_file "$(ruleset_definition_file "$def")" "$def"
+    done
+  fi
 
   if ! $applied; then
     print_status "$COLOR_STATUS_SKIP" "(no ruleset definitions configured)"
