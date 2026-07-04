@@ -1,11 +1,11 @@
-name: commit-message-check
+name: no-fixup-commits
 
 on:
   pull_request:
 
 jobs:
-  commit-message-check:
-    name: commit-message-check
+  no-fixup-commits:
+    name: no-fixup-commits
     runs-on: ubuntu-latest
     permissions:
       contents: read
