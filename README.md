@@ -81,8 +81,8 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
   - merge 方法: merge commit のみ（一般設定の squash / rebase OFF と揃える）
   - Approve 数 0、レビュースレッド解決必須
 - 任意適用: `settings/rulesets/*.json` のうち `REQUIRED_RULESETS` に含まれないファイル（`--with-rulesets <basename>`）
-  - 例: `commit-message-check.json` — `.github/workflows/commit-message-check.yml` を配置したリポジトリ向け
-  - default branch への merge 前に `commit-message-check` ステータスチェックを必須化
+  - 例: `no-fixup-commits.json` — `.github/workflows/no-fixup-commits.yml` を配置したリポジトリ向け
+  - default branch への merge 前に `no-fixup-commits` ステータスチェックを必須化
 - 常時適用は `rulesets-common.sh` の `REQUIRED_RULESETS`、それ以外は `--with-rulesets <basename>`
 
 各 JSON の値を編集すれば、適用内容をリポジトリやチームの方針に合わせて変更できる。
@@ -150,7 +150,7 @@ lefthook run pre-commit --all-files
     ├── actions-selected.json          # 許可する Actions（selected 時）
     └── rulesets/
         ├── default-branch-protection.json
-        └── commit-message-check.json       # 任意適用
+        └── no-fixup-commits.json  # 任意適用
 ```
 
 ## トラブルシューティング
