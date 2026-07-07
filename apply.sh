@@ -223,7 +223,7 @@ apply_rulesets_in_file() {
 
 append_with_rulesets() {
   local raw="$1"
-  local part file
+  local part
   IFS=',' read -ra parts <<<"$raw"
   for part in "${parts[@]}"; do
     part="${part#"${part%%[![:space:]]*}"}"
@@ -231,6 +231,14 @@ append_with_rulesets() {
     if [[ -z "$part" ]]; then
       continue
     fi
+    WITH_RULESETS+=("$part")
+  done
+}
+
+# Called after PRESET is resolved, since ruleset lookups depend on RULESETS_DIR.
+validate_with_rulesets() {
+  local part file
+  for part in "${WITH_RULESETS[@]}"; do
     file="$(ruleset_definition_file "$part")"
     if [[ ! -f "$file" ]]; then
       echo "Error: ruleset not found: ${file}" >&2
@@ -240,7 +248,6 @@ append_with_rulesets() {
       echo "Error: ${part} is a required ruleset (always applied)" >&2
       exit 1
     fi
-    WITH_RULESETS+=("$part")
   done
 }
 
@@ -273,7 +280,7 @@ apply_rulesets_from_settings() {
 
 usage() {
   cat >&2 <<EOF
-Usage: $(basename "$0") <owner>/<repo> [--dry-run] [--no-dependabot] [--with-rulesets <name>[,<name>...]]
+Usage: $(basename "$0") <owner>/<repo> [--dry-run] [--no-dependabot] [--preset <name>] [--with-rulesets <name>[,<name>...]]
 
 Apply repo-setup GitHub repository settings to the target repository.
 
@@ -281,8 +288,11 @@ With --dry-run, no API write is performed. Settings steps show an actual
 diff against the live repository. Enable-only steps report whether each
 feature is already enabled.
 
+--preset selects which settings/presets/<name>/ directory to apply
+(default: default).
+
 Optional rulesets (--with-rulesets):
-  Basenames under settings/rulesets/ not listed in REQUIRED_RULESETS
+  Basenames under settings/presets/<name>/rulesets/ not listed in REQUIRED_RULESETS
 
 With --no-dependabot, steps 6/8 and 7/8 (Dependabot alerts and security
 updates) are skipped.
@@ -302,6 +312,7 @@ EOF
 TARGET=""
 DRY_RUN=false
 NO_DEPENDABOT=false
+PRESET="default"
 WITH_RULESETS=()
 
 while [[ $# -gt 0 ]]; do
@@ -316,6 +327,14 @@ while [[ $# -gt 0 ]]; do
   --no-dependabot)
     NO_DEPENDABOT=true
     shift
+    ;;
+  --preset)
+    if [[ $# -lt 2 ]]; then
+      echo "Error: --preset requires a value" >&2
+      exit 1
+    fi
+    PRESET="$2"
+    shift 2
     ;;
   --with-rulesets)
     if [[ $# -lt 2 ]]; then
@@ -348,6 +367,9 @@ fi
 require_command gh
 require_command jq
 
+resolve_preset_dir "$PRESET"
+validate_with_rulesets
+
 if ! [[ "$TARGET" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
   echo "Error: invalid target format. Expected: <owner>/<repo>" >&2
   exit 1
@@ -361,7 +383,7 @@ REPO_JSON="$(gh api "repos/${TARGET}" 2>/dev/null)" || {
 REPO_VISIBILITY="public"
 [[ "$(jq -r '.private' <<<"$REPO_JSON")" == "true" ]] && REPO_VISIBILITY="private"
 
-echo "==> Applying repo-setup to: ${TARGET} (${REPO_VISIBILITY})"
+echo "==> Applying repo-setup to: ${TARGET} (${REPO_VISIBILITY}), preset: ${PRESET}"
 if $DRY_RUN; then
   echo "    DRY-RUN MODE (no API writes)"
 fi

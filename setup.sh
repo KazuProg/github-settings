@@ -7,6 +7,41 @@ APPLY="./apply.sh"
 # shellcheck source=rulesets-common.sh
 source rulesets-common.sh
 
+discover_presets() {
+  local d
+  PRESET_NAMES=()
+  shopt -s nullglob
+  for d in "${PRESETS_DIR}"/*/; do
+    PRESET_NAMES+=("$(basename "$d")")
+  done
+  shopt -u nullglob
+  if ((${#PRESET_NAMES[@]} > 0)); then
+    local sorted=()
+    while IFS= read -r line; do
+      sorted+=("$line")
+    done < <(printf '%s\n' "${PRESET_NAMES[@]}" | sort)
+    PRESET_NAMES=("${sorted[@]}")
+  fi
+}
+
+prompt_preset() {
+  local value p
+  while true; do
+    read -rp "Preset (${PRESET_NAMES[*]}) [default]: " value || {
+      echo
+      exit 130
+    }
+    value="${value:-default}"
+    for p in "${PRESET_NAMES[@]}"; do
+      if [[ "$p" == "$value" ]]; then
+        PRESET="$value"
+        return
+      fi
+    done
+    echo "  ! Unknown preset: ${value}" >&2
+  done
+}
+
 discover_optional_ruleset_definitions() {
   local f label names=()
   OPTIONAL_RULESET_DEFINITIONS=()
@@ -83,11 +118,18 @@ prompt_yes_no() {
 require_command gh
 require_command jq
 
-OPTIONAL_RULESET_DEFINITIONS=()
-discover_optional_ruleset_definitions
-
 echo "==> repo-setup interactive setup"
 echo ""
+
+PRESET_NAMES=()
+discover_presets
+prompt_preset
+resolve_preset_dir "$PRESET"
+echo "  -> preset: ${PRESET}"
+echo ""
+
+OPTIONAL_RULESET_DEFINITIONS=()
+discover_optional_ruleset_definitions
 
 prompt_required \
   "Target repository (owner/repo): " \
@@ -105,6 +147,9 @@ echo ""
 
 build_apply_args() {
   APPLY_ARGS=("$TARGET")
+  if [[ "$PRESET" != "default" ]]; then
+    APPLY_ARGS+=(--preset "$PRESET")
+  fi
   if ! $ENABLE_DEPENDABOT; then
     APPLY_ARGS+=(--no-dependabot)
   fi
