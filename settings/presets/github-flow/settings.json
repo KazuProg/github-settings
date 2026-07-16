@@ -1,0 +1,41 @@
+{
+  "general": {
+    "has_issues": true,
+    "has_wiki": false,
+    "has_discussions": false,
+    "has_projects": false,
+    "allow_merge_commit": true,
+    "allow_squash_merge": false,
+    "allow_rebase_merge": true,
+    "allow_auto_merge": true,
+    "delete_branch_on_merge": true,
+    "allow_update_branch": true,
+    "merge_commit_title": "MERGE_MESSAGE",
+    "merge_commit_message": "PR_TITLE",
+    "web_commit_signoff_required": false,
+    "security_and_analysis": {
+      "secret_scanning": { "status": "enabled" },
+      "secret_scanning_push_protection": { "status": "enabled" }
+    }
+  },
+  "actions": {
+    "permissions": {
+      "enabled": true,
+      "allowed_actions": "selected"
+    },
+    "selected": {
+      "github_owned_allowed": true,
+      "verified_allowed": true,
+      "patterns_allowed": [
+        "cocogitto/cocogitto-action@*",
+        "softprops/action-gh-release@*"
+      ]
+    }
+  },
+  "features": {
+    "immutable_releases": true,
+    "private_vulnerability_reporting": true,
+    "dependabot_alerts": true,
+    "dependabot_security_updates": true
+  }
+}
