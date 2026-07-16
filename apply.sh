@@ -25,7 +25,6 @@ EOF
 
 readonly COLOR_STATUS_OK=90
 readonly COLOR_STATUS_WOULD=33
-readonly COLOR_STATUS_INFO=36
 readonly COLOR_STATUS_SKIP=35
 
 require_command() {
@@ -46,27 +45,98 @@ print_colored_diff() {
     true
 }
 
-# Optional third argument: cached API JSON (avoids a duplicate GET).
-# settings_source: file path, or "-" to read desired JSON from stdin.
-dry_run_json_diff() {
-  local api_path="$1"
-  local settings_source="$2"
-  local current_json="${3:-}"
-  local desired_json current_filtered
+# Fetch current state for all endpoints and build a JSON matching settings.json shape.
+build_unified_current_json() {
+  local actions_perms actions_selected allowed
+  local response imm pvr da dsu
 
-  if [[ "$settings_source" == "-" ]]; then
-    desired_json="$(jq -S .)"
+  actions_perms="$(gh api "repos/${TARGET}/actions/permissions")"
+  allowed="$(jq -r '.allowed_actions' <<<"$actions_perms")"
+  if [[ "$allowed" == "selected" ]]; then
+    actions_selected="$(gh api "repos/${TARGET}/actions/permissions/selected-actions")"
   else
-    desired_json="$(jq -S . "${settings_source}")"
+    actions_selected="null"
   fi
-  if [[ -z "$current_json" ]]; then
-    current_json="$(gh api "${api_path}")"
+
+  if response="$(gh api "repos/${TARGET}/immutable-releases" 2>/dev/null)"; then
+    imm="$(jq -r '.enabled // false' <<<"$response")"
+  else
+    imm=false
   fi
-  current_filtered="$(jq -S --argjson desired "$desired_json" "$JQ_FILTER_TO_DESIRED" <<<"$current_json")"
-  if [[ "$current_filtered" == "$desired_json" ]]; then
+
+  if is_public_repo; then
+    if response="$(gh api "repos/${TARGET}/private-vulnerability-reporting" 2>/dev/null)"; then
+      pvr="$(jq -r '.enabled // false' <<<"$response")"
+    else
+      pvr=false
+    fi
+  else
+    pvr=null
+  fi
+
+  if gh api "repos/${TARGET}/vulnerability-alerts" >/dev/null 2>&1; then
+    da=true
+  else
+    da=false
+  fi
+
+  if response="$(gh api "repos/${TARGET}/automated-security-fixes" 2>/dev/null)"; then
+    dsu="$(jq -r '.enabled // false' <<<"$response")"
+  else
+    dsu=false
+  fi
+
+  jq -n \
+    --argjson general "$REPO_JSON" \
+    --argjson actions_perms "$actions_perms" \
+    --argjson actions_selected "$actions_selected" \
+    --argjson imm "$imm" \
+    --argjson pvr "$pvr" \
+    --argjson da "$da" \
+    --argjson dsu "$dsu" \
+    '{
+      general: $general,
+      actions: { permissions: $actions_perms, selected: $actions_selected },
+      features: {
+        immutable_releases: $imm,
+        private_vulnerability_reporting: $pvr,
+        dependabot_alerts: $da,
+        dependabot_security_updates: $dsu
+      }
+    }'
+}
+
+# Build settings.json content with per-repo adjustments applied (private repo, GHAS, etc.).
+build_unified_desired_json() {
+  local settings_file="${SETTINGS_DIR}/settings.json"
+  local desired
+  desired="$(jq '.' "$settings_file")"
+
+  if [[ "$(jq -r '.private' <<<"$REPO_JSON")" == "true" ]] &&
+    [[ "$(jq -r '.security_and_analysis.advanced_security.status // "disabled"' <<<"$REPO_JSON")" != "enabled" ]]; then
+    desired="$(jq 'del(.general.security_and_analysis)' <<<"$desired")"
+  fi
+
+  if ! is_public_repo; then
+    desired="$(jq '.features.private_vulnerability_reporting = null' <<<"$desired")"
+  fi
+
+  if [[ "$(jq -r '.actions.permissions.allowed_actions' <<<"$desired")" != "selected" ]]; then
+    desired="$(jq '.actions.selected = null' <<<"$desired")"
+  fi
+
+  printf '%s' "$desired"
+}
+
+show_unified_dry_run_diff() {
+  local desired current filtered
+  desired="$(build_unified_desired_json | jq -S .)"
+  current="$(build_unified_current_json)"
+  filtered="$(jq -S --argjson desired "$desired" "$JQ_FILTER_TO_DESIRED" <<<"$current")"
+  if [[ "$filtered" == "$desired" ]]; then
     print_status "$COLOR_STATUS_OK" "(no diff)"
   else
-    print_colored_diff <(echo "$current_filtered") <(echo "$desired_json")
+    print_colored_diff <(echo "$filtered") <(echo "$desired")
   fi
 }
 
@@ -74,54 +144,37 @@ dry_run_json_diff() {
 build_general_settings_json() {
   local settings_file="${SETTINGS_DIR}/settings.json"
   if [[ "$(jq -r '.private' <<<"$REPO_JSON")" != "true" ]]; then
-    jq '.' "${settings_file}"
+    jq '.general' "${settings_file}"
     return
   fi
   if [[ "$(jq -r '.security_and_analysis.advanced_security.status // "disabled"' <<<"$REPO_JSON")" == "enabled" ]]; then
-    jq '.' "${settings_file}"
+    jq '.general' "${settings_file}"
     return
   fi
   print_status "$COLOR_STATUS_SKIP" "(skipping secret scanning; private repo without Advanced Security)"
-  jq 'del(.security_and_analysis)' "${settings_file}"
+  jq '.general | del(.security_and_analysis)' "${settings_file}"
 }
 
-# PUT endpoint to enable a feature. check: json (.enabled) | http204 (GET succeeds).
+apply_feature_from_settings() {
+  local label="$1"
+  local features_key="$2"
+  local endpoint="$3"
+  local settings_file="${SETTINGS_DIR}/settings.json"
+  local enabled
+  enabled="$(jq -r ".features.${features_key} // false" "$settings_file")"
+  if [[ "$enabled" == "true" ]]; then
+    enable_feature "$label" "$endpoint"
+  else
+    skip_feature "$label" "(skipped; disabled in settings.json)"
+  fi
+}
+
+# PUT endpoint to enable a feature.
 enable_feature() {
   local label="$1"
   local endpoint="$2"
-  local would_msg="$3"
-  local check="${4:-json}"
-
   echo "--> ${label}"
-  if $DRY_RUN; then
-    set +e
-    case "$check" in
-    json)
-      local response
-      response="$(gh api "${endpoint}" 2>/dev/null)"
-      local code=$?
-      set -e
-      if [[ $code -eq 0 ]] &&
-        [[ "$(jq -r '.enabled // false' <<<"$response")" == "true" ]]; then
-        print_status "$COLOR_STATUS_OK" "(already enabled)"
-      else
-        print_status "$COLOR_STATUS_WOULD" "$would_msg"
-      fi
-      ;;
-    http204)
-      gh api "${endpoint}" >/dev/null 2>&1
-      local code=$?
-      set -e
-      if [[ $code -eq 0 ]]; then
-        print_status "$COLOR_STATUS_OK" "(already enabled)"
-      else
-        print_status "$COLOR_STATUS_WOULD" "$would_msg"
-      fi
-      ;;
-    esac
-  else
-    gh api -X PUT "${endpoint}" >/dev/null
-  fi
+  gh api -X PUT "${endpoint}" >/dev/null
 }
 
 skip_feature() {
@@ -142,15 +195,10 @@ fetch_rulesets_index() {
     return 0
   fi
   if echo "$response" | grep -q "Upgrade to GitHub Pro"; then
-    cat >&2 <<EOF
-Error: Rulesets API is not available for ${TARGET}.
-       GitHub Free does not support rulesets on private repositories.
-       Either upgrade to GitHub Pro or make ${TARGET} public.
-EOF
-  else
-    echo "Error: failed to query rulesets API:" >&2
-    echo "$response" >&2
+    return 2
   fi
+  echo "Error: failed to query rulesets API:" >&2
+  echo "$response" >&2
   exit 1
 }
 
@@ -245,9 +293,16 @@ append_with_rulesets() {
 }
 
 apply_rulesets_from_settings() {
-  local def file applied=false
+  local def file applied=false rc
 
+  set +e
   RULESETS_INDEX="$(fetch_rulesets_index)"
+  rc=$?
+  set -e
+  if [[ $rc -eq 2 ]]; then
+    print_status "$COLOR_STATUS_SKIP" "(skipped; rulesets require GitHub Pro on private repos)"
+    return
+  fi
 
   for def in "${REQUIRED_RULESETS[@]}"; do
     file="$(ruleset_definition_file "$def")"
@@ -273,7 +328,7 @@ apply_rulesets_from_settings() {
 
 usage() {
   cat >&2 <<EOF
-Usage: $(basename "$0") <owner>/<repo> [--dry-run] [--no-dependabot] [--with-rulesets <name>[,<name>...]]
+Usage: $(basename "$0") <owner>/<repo> [--dry-run] [--with-rulesets <name>[,<name>...]]
 
 Apply repo-setup GitHub repository settings to the target repository.
 
@@ -284,8 +339,9 @@ feature is already enabled.
 Optional rulesets (--with-rulesets):
   Basenames under settings/rulesets/ not listed in REQUIRED_RULESETS
 
-With --no-dependabot, steps 6/8 and 7/8 (Dependabot alerts and security
-updates) are skipped.
+Feature toggles (immutable releases, private vulnerability reporting,
+Dependabot alerts / security updates) are controlled by the "features"
+section of settings/settings.json.
 
 Requires gh (authenticated with the 'repo' scope) and jq.
 The target repository must already exist.
@@ -293,15 +349,14 @@ The target repository must already exist.
 Repository-type skips (reported during apply):
   - Secret scanning: private repos without Advanced Security
   - Private vulnerability reporting: public repos only
-  - Dependabot alerts/security updates: when --no-dependabot is given
-  - Rulesets: private repos on GitHub Free (requires Pro or public repo)
+  - Features disabled via settings/settings.json (features.*)
+  - Rulesets: skipped on private repos on GitHub Free (requires Pro)
 EOF
   exit 1
 }
 
 TARGET=""
 DRY_RUN=false
-NO_DEPENDABOT=false
 WITH_RULESETS=()
 
 while [[ $# -gt 0 ]]; do
@@ -311,10 +366,6 @@ while [[ $# -gt 0 ]]; do
     ;;
   --dry-run)
     DRY_RUN=true
-    shift
-    ;;
-  --no-dependabot)
-    NO_DEPENDABOT=true
     shift
     ;;
   --with-rulesets)
@@ -362,97 +413,58 @@ REPO_VISIBILITY="public"
 [[ "$(jq -r '.private' <<<"$REPO_JSON")" == "true" ]] && REPO_VISIBILITY="private"
 
 echo "==> Applying repo-setup to: ${TARGET} (${REPO_VISIBILITY})"
+
 if $DRY_RUN; then
   echo "    DRY-RUN MODE (no API writes)"
+  echo "--> Settings diff"
+  show_unified_dry_run_diff
+  echo "--> Rulesets"
+  apply_rulesets_from_settings
+  echo "==> Done."
+  exit 0
 fi
 
-echo "--> 1/8 General settings"
-GENERAL_SETTINGS_JSON="$(build_general_settings_json)"
-if $DRY_RUN; then
-  echo "$GENERAL_SETTINGS_JSON" | dry_run_json_diff "repos/${TARGET}" "-" "$REPO_JSON"
-else
-  echo "$GENERAL_SETTINGS_JSON" | gh api -X PATCH "repos/${TARGET}" --input - >/dev/null
-fi
+SETTINGS_FILE="${SETTINGS_DIR}/settings.json"
 
-enable_feature \
-  "2/8 Enable release immutability" \
-  "repos/${TARGET}/immutable-releases" \
-  "(would enable release immutability)"
+echo "--> General settings"
+build_general_settings_json | gh api -X PATCH "repos/${TARGET}" --input - >/dev/null
 
-echo "--> 3/8 Actions permissions"
-ACTIONS_PERMISSIONS_JSON=""
-CURRENT_ALLOWED_ACTIONS=""
-ACTIONS_FILE="${SETTINGS_DIR}/actions.json"
-DESIRED_PERMISSIONS="$(jq -c '.permissions' "$ACTIONS_FILE")"
-DESIRED_SELECTED="$(jq -c '.selected' "$ACTIONS_FILE")"
+echo "--> Actions permissions"
+jq -c '.actions.permissions' "$SETTINGS_FILE" |
+  gh api -X PUT "repos/${TARGET}/actions/permissions" --input - >/dev/null
 
-if $DRY_RUN; then
-  ACTIONS_PERMISSIONS_JSON="$(gh api "repos/${TARGET}/actions/permissions")"
-  CURRENT_ALLOWED_ACTIONS="$(jq -r '.allowed_actions' <<<"$ACTIONS_PERMISSIONS_JSON")"
-  echo "$DESIRED_PERMISSIONS" | dry_run_json_diff \
-    "repos/${TARGET}/actions/permissions" \
-    "-" \
-    "$ACTIONS_PERMISSIONS_JSON"
-else
-  echo "$DESIRED_PERMISSIONS" | gh api -X PUT "repos/${TARGET}/actions/permissions" --input - >/dev/null
-fi
-
-ALLOWED_ACTIONS="$(jq -r '.permissions.allowed_actions' "$ACTIONS_FILE")"
+ALLOWED_ACTIONS="$(jq -r '.actions.permissions.allowed_actions' "$SETTINGS_FILE")"
 if [[ "$ALLOWED_ACTIONS" == "selected" ]]; then
-  echo "--> 4/8 Actions allowed actions (selected)"
-  if $DRY_RUN; then
-    [[ -n "$CURRENT_ALLOWED_ACTIONS" ]] ||
-      CURRENT_ALLOWED_ACTIONS="$(gh api "repos/${TARGET}/actions/permissions" | jq -r '.allowed_actions')"
-    if [[ "$CURRENT_ALLOWED_ACTIONS" == "selected" ]]; then
-      echo "$DESIRED_SELECTED" | dry_run_json_diff \
-        "repos/${TARGET}/actions/permissions/selected-actions" \
-        "-"
-    else
-      print_status "$COLOR_STATUS_INFO" "(selected-actions API unavailable while allowed_actions is \"${CURRENT_ALLOWED_ACTIONS}\")"
-      print_status "$COLOR_STATUS_WOULD" "(would apply after step 3 sets allowed_actions to \"selected\")"
-      print_colored_diff /dev/null <(echo "$DESIRED_SELECTED" | jq -S .)
-    fi
-  else
-    echo "$DESIRED_SELECTED" | gh api -X PUT "repos/${TARGET}/actions/permissions/selected-actions" \
-      --input - >/dev/null
-  fi
-else
-  echo "--> 4/8 Actions allowed actions (selected)"
-  print_status "$COLOR_STATUS_OK" "(skipped; allowed_actions is \"${ALLOWED_ACTIONS}\")"
+  echo "--> Actions allowed actions (selected)"
+  jq -c '.actions.selected' "$SETTINGS_FILE" |
+    gh api -X PUT "repos/${TARGET}/actions/permissions/selected-actions" --input - >/dev/null
 fi
+
+apply_feature_from_settings \
+  "Release immutability" \
+  "immutable_releases" \
+  "repos/${TARGET}/immutable-releases"
 
 if is_public_repo; then
-  enable_feature \
-    "5/8 Enable private vulnerability reporting" \
-    "repos/${TARGET}/private-vulnerability-reporting" \
-    "(would enable private vulnerability reporting)"
+  apply_feature_from_settings \
+    "Private vulnerability reporting" \
+    "private_vulnerability_reporting" \
+    "repos/${TARGET}/private-vulnerability-reporting"
 else
-  skip_feature \
-    "5/8 Enable private vulnerability reporting" \
-    "(skipped; public repositories only)"
+  skip_feature "Private vulnerability reporting" "(skipped; public repositories only)"
 fi
 
-if $NO_DEPENDABOT; then
-  skip_feature \
-    "6/8 Enable Dependabot alerts" \
-    "(skipped; --no-dependabot)"
-  skip_feature \
-    "7/8 Enable Dependabot security updates" \
-    "(skipped; --no-dependabot)"
-else
-  enable_feature \
-    "6/8 Enable Dependabot alerts" \
-    "repos/${TARGET}/vulnerability-alerts" \
-    "(would enable Dependabot vulnerability alerts)" \
-    http204
+apply_feature_from_settings \
+  "Dependabot alerts" \
+  "dependabot_alerts" \
+  "repos/${TARGET}/vulnerability-alerts"
 
-  enable_feature \
-    "7/8 Enable Dependabot security updates" \
-    "repos/${TARGET}/automated-security-fixes" \
-    "(would enable Dependabot automated security fixes)"
-fi
+apply_feature_from_settings \
+  "Dependabot security updates" \
+  "dependabot_security_updates" \
+  "repos/${TARGET}/automated-security-fixes"
 
-echo "--> 8/8 Rulesets"
+echo "--> Rulesets"
 apply_rulesets_from_settings
 
 echo "==> Done."

@@ -21,10 +21,11 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
 
 1. 対象リポジトリ（`owner/repo`）の入力
 2. リポジトリの存在確認（public / private を表示）
-3. Dependabot alerts + security updates を有効化するかの確認（デフォルト: はい）
-4. 任意 rulesets の有効化確認（リポジトリ単位）
-5. `--dry-run` の実行（任意・デフォルト: はい）
-6. 本番適用の実行（任意・デフォルト: いいえ）
+3. 任意 rulesets の有効化確認（リポジトリ単位）
+4. `--dry-run` の実行（任意・デフォルト: はい）
+5. 本番適用の実行（任意・デフォルト: いいえ）
+
+feature の on/off（release immutability、private vulnerability reporting、Dependabot alerts / security updates）は `settings/settings.json` の `features` セクションで宣言的に管理する。
 
 ## 直接実行
 
@@ -40,16 +41,16 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
 
 ## 適用される設定（8 ステップ）
 
-| #   | 項目                                                                       | 設定ファイル / API                                                |
-| --- | -------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| 1   | 一般設定（Issues、マージ方法、Secret scanning など）                       | `settings/settings.json`                                          |
-| 2   | Release immutability の有効化                                              | `PUT .../immutable-releases`                                      |
-| 3   | Actions 権限                                                               | `settings/actions.json`                                           |
-| 4   | 許可する Actions（`allowed_actions: selected` の場合）                     | `settings/actions.json`                                           |
-| 5   | Private vulnerability reporting の有効化（public のみ）                    | `PUT .../private-vulnerability-reporting`                         |
-| 6   | Dependabot alerts の有効化（`--no-dependabot` 指定時はスキップ）           | `PUT .../vulnerability-alerts`                                    |
-| 7   | Dependabot security updates の有効化（`--no-dependabot` 指定時はスキップ） | `PUT .../automated-security-fixes`                                |
-| 8   | Rulesets                                                                   | `settings/rulesets/*.json`（常時適用 + `--with-rulesets` で任意） |
+| #   | 項目                                                                                                 | 設定ファイル / API                                                |
+| --- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| 1   | 一般設定（Issues、マージ方法、Secret scanning など）                                                 | `settings/settings.json` (`.general`)                             |
+| 2   | Release immutability の有効化（`features.immutable_releases`）                                       | `PUT .../immutable-releases`                                      |
+| 3   | Actions 権限                                                                                         | `settings/settings.json` (`.actions.permissions`)                 |
+| 4   | 許可する Actions（`allowed_actions: selected` の場合）                                               | `settings/settings.json` (`.actions.selected`)                    |
+| 5   | Private vulnerability reporting の有効化（public のみ / `features.private_vulnerability_reporting`） | `PUT .../private-vulnerability-reporting`                         |
+| 6   | Dependabot alerts の有効化（`features.dependabot_alerts`）                                           | `PUT .../vulnerability-alerts`                                    |
+| 7   | Dependabot security updates の有効化（`features.dependabot_security_updates`）                       | `PUT .../automated-security-fixes`                                |
+| 8   | Rulesets                                                                                             | `settings/rulesets/*.json`（常時適用 + `--with-rulesets` で任意） |
 
 ### 現在の推奨値の概要
 
@@ -67,7 +68,7 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
 - リリース公開後の assets / tags の改変を禁止
 - リリース運用を始める前でも有効化される（個人開発では必須ではない）
 
-**Actions** (`settings/actions.json`)
+**Actions** (`settings/settings.json` の `.actions`)
 
 - Actions: 有効
 - 許可範囲: `selected`（GitHub 公式・検証済み publisher のみ）
@@ -106,7 +107,7 @@ GitHub の制限により、apply 時に一部設定をスキップしたり、a
 | ------------------------------- | --------------------- | -------------------------------- | --------------------------- |
 | Secret scanning                 | private + GHAS なし   | PATCH から除外                   | スキップ表示、diff に出ない |
 | Private vulnerability reporting | private               | スキップ                         | スキップ表示                |
-| Rulesets                        | private + Free プラン | エラーで中断                     | エラーで中断                |
+| Rulesets                        | private + Free プラン | スキップ                         | スキップ表示                |
 | `allow_auto_merge`              | private + Free プラン | エラーにならないが GitHub が無視 | diff が残る（無視してよい） |
 
 上表の対象以外（Issues、マージ方法、Actions、Dependabot、release immutability 等）は private でも通常どおり適用される。Rulesets は **public、または Pro 以上の private** でのみ利用可能。
@@ -147,8 +148,7 @@ lefthook run pre-commit --all-files
 ├── apply.sh              # 設定適用（--dry-run 対応）
 ├── rulesets-common.sh    # 常時適用 ruleset 定義（apply.sh / setup.sh 共有）
 └── settings/
-    ├── settings.json                  # 一般設定
-    ├── actions.json                   # Actions 権限 + 許可する Actions
+    ├── settings.json                  # 一般設定 / Actions / features を統合
     └── rulesets/
         ├── default-branch-protection.json
         ├── no-fixup-commits.json  # 任意適用
@@ -173,6 +173,6 @@ lefthook run pre-commit --all-files
 
 ステップ 3 で `allowed_actions` がまだ `all` の場合、ステップ 4 の API が使えないため dry-run では desired 値のプレビューのみ表示される。本番適用時はステップ 3 の後にステップ 4 が正常に実行される。
 
-**`Rulesets API is not available` / `Upgrade to GitHub Pro`**
+**Rulesets が適用されない (private + Free プラン)**
 
-private リポジトリで GitHub Free プランを使っている。Rulesets を使うには Pro 以上にアップグレードするか、リポジトリを public にする。
+GitHub Free では private リポジトリで rulesets API が使えない。ステップ 8 はスキップされ、その他の設定は通常どおり適用される。rulesets を使いたい場合は Pro 以上にアップグレードするか、リポジトリを public にする。
