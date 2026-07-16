@@ -45,7 +45,7 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
 | 1   | 一般設定（Issues、マージ方法、Secret scanning など）                       | `settings/settings.json`                                          |
 | 2   | Release immutability の有効化                                              | `PUT .../immutable-releases`                                      |
 | 3   | Actions 権限                                                               | `settings/actions.json`                                           |
-| 4   | 許可する Actions（`allowed_actions: selected` の場合）                     | `settings/actions-selected.json`                                  |
+| 4   | 許可する Actions（`allowed_actions: selected` の場合）                     | `settings/actions.json`                                           |
 | 5   | Private vulnerability reporting の有効化（public のみ）                    | `PUT .../private-vulnerability-reporting`                         |
 | 6   | Dependabot alerts の有効化（`--no-dependabot` 指定時はスキップ）           | `PUT .../vulnerability-alerts`                                    |
 | 7   | Dependabot security updates の有効化（`--no-dependabot` 指定時はスキップ） | `PUT .../automated-security-fixes`                                |
@@ -67,7 +67,7 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
 - リリース公開後の assets / tags の改変を禁止
 - リリース運用を始める前でも有効化される（個人開発では必須ではない）
 
-**Actions** (`settings/actions.json`, `settings/actions-selected.json`)
+**Actions** (`settings/actions.json`)
 
 - Actions: 有効
 - 許可範囲: `selected`（GitHub 公式・検証済み publisher のみ）
@@ -148,8 +148,7 @@ lefthook run pre-commit --all-files
 ├── rulesets-common.sh    # 常時適用 ruleset 定義（apply.sh / setup.sh 共有）
 └── settings/
     ├── settings.json                  # 一般設定
-    ├── actions.json                   # Actions 権限
-    ├── actions-selected.json          # 許可する Actions（selected 時）
+    ├── actions.json                   # Actions 権限 + 許可する Actions
     └── rulesets/
         ├── default-branch-protection.json
         ├── no-fixup-commits.json  # 任意適用

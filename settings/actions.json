@@ -1,4 +1,11 @@
 {
-  "enabled": true,
-  "allowed_actions": "selected"
+  "permissions": {
+    "enabled": true,
+    "allowed_actions": "selected"
+  },
+  "selected": {
+    "github_owned_allowed": true,
+    "verified_allowed": true,
+    "patterns_allowed": []
+  }
 }
