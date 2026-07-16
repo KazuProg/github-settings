@@ -210,6 +210,33 @@ ruleset_id_in_index() {
   ' <<<"$index_json"
 }
 
+show_ruleset_dry_run_diff() {
+  local name="$1"
+  local desired_raw="$2"
+  local existing_id="$3"
+  local desired current filtered
+
+  desired="$(jq -S . <<<"$desired_raw")"
+
+  if [[ -z "$existing_id" ]]; then
+    print_status "$COLOR_STATUS_WOULD" "(would create: ${name})"
+    print_colored_diff /dev/null <(echo "$desired")
+    return
+  fi
+
+  print_status "$COLOR_STATUS_WOULD" "(would update: ${name}, id=${existing_id})"
+  if ! current="$(gh api "repos/${TARGET}/rulesets/${existing_id}" 2>/dev/null)"; then
+    print_status "$COLOR_STATUS_SKIP" "(failed to fetch current ruleset; skipping diff)"
+    return
+  fi
+  filtered="$(jq -S --argjson desired "$desired" "$JQ_FILTER_TO_DESIRED" <<<"$current")"
+  if [[ "$filtered" == "$desired" ]]; then
+    print_status "$COLOR_STATUS_OK" "(no diff)"
+  else
+    print_colored_diff <(echo "$filtered") <(echo "$desired")
+  fi
+}
+
 upsert_ruleset() {
   local name="$1"
   local json="$2"
@@ -217,11 +244,7 @@ upsert_ruleset() {
   existing_id="$(ruleset_id_in_index "$name" "$RULESETS_INDEX")"
 
   if $DRY_RUN; then
-    if [[ -z "$existing_id" ]]; then
-      print_status "$COLOR_STATUS_WOULD" "(would create: ${name})"
-    else
-      print_status "$COLOR_STATUS_WOULD" "(would update: ${name}, id=${existing_id})"
-    fi
+    show_ruleset_dry_run_diff "$name" "$json" "$existing_id"
     return
   fi
 
