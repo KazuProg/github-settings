@@ -382,35 +382,39 @@ enable_feature \
 echo "--> 3/8 Actions permissions"
 ACTIONS_PERMISSIONS_JSON=""
 CURRENT_ALLOWED_ACTIONS=""
+ACTIONS_FILE="${SETTINGS_DIR}/actions.json"
+DESIRED_PERMISSIONS="$(jq -c '.permissions' "$ACTIONS_FILE")"
+DESIRED_SELECTED="$(jq -c '.selected' "$ACTIONS_FILE")"
+
 if $DRY_RUN; then
   ACTIONS_PERMISSIONS_JSON="$(gh api "repos/${TARGET}/actions/permissions")"
   CURRENT_ALLOWED_ACTIONS="$(jq -r '.allowed_actions' <<<"$ACTIONS_PERMISSIONS_JSON")"
-  dry_run_json_diff \
+  echo "$DESIRED_PERMISSIONS" | dry_run_json_diff \
     "repos/${TARGET}/actions/permissions" \
-    "${SETTINGS_DIR}/actions.json" \
+    "-" \
     "$ACTIONS_PERMISSIONS_JSON"
 else
-  gh api -X PUT "repos/${TARGET}/actions/permissions" --input "${SETTINGS_DIR}/actions.json" >/dev/null
+  echo "$DESIRED_PERMISSIONS" | gh api -X PUT "repos/${TARGET}/actions/permissions" --input - >/dev/null
 fi
 
-ALLOWED_ACTIONS="$(jq -r '.allowed_actions' "${SETTINGS_DIR}/actions.json")"
+ALLOWED_ACTIONS="$(jq -r '.permissions.allowed_actions' "$ACTIONS_FILE")"
 if [[ "$ALLOWED_ACTIONS" == "selected" ]]; then
   echo "--> 4/8 Actions allowed actions (selected)"
   if $DRY_RUN; then
     [[ -n "$CURRENT_ALLOWED_ACTIONS" ]] ||
       CURRENT_ALLOWED_ACTIONS="$(gh api "repos/${TARGET}/actions/permissions" | jq -r '.allowed_actions')"
     if [[ "$CURRENT_ALLOWED_ACTIONS" == "selected" ]]; then
-      dry_run_json_diff \
+      echo "$DESIRED_SELECTED" | dry_run_json_diff \
         "repos/${TARGET}/actions/permissions/selected-actions" \
-        "${SETTINGS_DIR}/actions-selected.json"
+        "-"
     else
       print_status "$COLOR_STATUS_INFO" "(selected-actions API unavailable while allowed_actions is \"${CURRENT_ALLOWED_ACTIONS}\")"
       print_status "$COLOR_STATUS_WOULD" "(would apply after step 3 sets allowed_actions to \"selected\")"
-      print_colored_diff /dev/null <(jq -S . "${SETTINGS_DIR}/actions-selected.json")
+      print_colored_diff /dev/null <(echo "$DESIRED_SELECTED" | jq -S .)
     fi
   else
-    gh api -X PUT "repos/${TARGET}/actions/permissions/selected-actions" \
-      --input "${SETTINGS_DIR}/actions-selected.json" >/dev/null
+    echo "$DESIRED_SELECTED" | gh api -X PUT "repos/${TARGET}/actions/permissions/selected-actions" \
+      --input - >/dev/null
   fi
 else
   echo "--> 4/8 Actions allowed actions (selected)"
