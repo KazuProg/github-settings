@@ -7,30 +7,37 @@ APPLY="./apply.sh"
 # shellcheck source=rulesets-common.sh
 source rulesets-common.sh
 
-discover_optional_ruleset_definitions() {
-  local f label names=()
-  OPTIONAL_RULESET_DEFINITIONS=()
-
-  shopt -s nullglob
-  for f in "${RULESETS_DIR}"/*.json; do
-    label="$(basename "$f" .json)"
-    if is_required_ruleset "$label"; then
-      continue
-    fi
-    names+=("$label")
-  done
-  if ((${#names[@]} > 0)); then
-    while IFS= read -r line; do
-      OPTIONAL_RULESET_DEFINITIONS+=("$line")
-    done < <(printf '%s\n' "${names[@]}" | sort)
-  fi
-  shopt -u nullglob
-}
-
 ruleset_prompt_label() {
   local def="$1"
   jq -r '.rulesets[0].name // "'"$def"'"' "$(ruleset_definition_file "$def")"
 }
+
+discover_presets() {
+  local d name names=()
+  PRESET_DEFINITIONS=()
+
+  shopt -s nullglob
+  for d in settings/presets/*/; do
+    name="$(basename "$d")"
+    names+=("$name")
+  done
+  shopt -u nullglob
+
+  if ((${#names[@]} > 0)); then
+    while IFS= read -r line; do
+      PRESET_DEFINITIONS+=("$line")
+    done < <(printf '%s\n' "${names[@]}" | sort)
+  fi
+}
+
+preset_description() {
+  local name="$1"
+  local file="settings/presets/${name}/preset.json"
+  if [[ -f "$file" ]]; then
+    jq -r '.description // ""' "$file"
+  fi
+}
+
 
 require_command() {
   local cmd="$1"
@@ -83,8 +90,8 @@ prompt_yes_no() {
 require_command gh
 require_command jq
 
-OPTIONAL_RULESET_DEFINITIONS=()
-discover_optional_ruleset_definitions
+PRESET_DEFINITIONS=()
+discover_presets
 
 echo "==> repo-setup interactive setup"
 echo ""
@@ -103,8 +110,55 @@ REPO_VISIBILITY="$(gh api "repos/${TARGET}" --jq 'if .private then "private" els
 echo "  -> ${TARGET} (${REPO_VISIBILITY})"
 echo ""
 
+SELECTED_PRESET=""
+echo "==> Preset"
+if ((${#PRESET_DEFINITIONS[@]} == 0)); then
+  echo "  (none)"
+else
+  echo "  0) (none) - use default settings only"
+  i=1
+  for name in "${PRESET_DEFINITIONS[@]}"; do
+    desc="$(preset_description "$name")"
+    if [[ -n "$desc" ]]; then
+      echo "  ${i}) ${name} - ${desc}"
+    else
+      echo "  ${i}) ${name}"
+    fi
+    i=$((i + 1))
+  done
+  while true; do
+    read -rp "  Select preset [0-${#PRESET_DEFINITIONS[@]}] (default: 0): " ans || {
+      echo
+      exit 130
+    }
+    ans="${ans:-0}"
+    if [[ "$ans" =~ ^[0-9]+$ ]] && ((ans >= 0 && ans <= ${#PRESET_DEFINITIONS[@]})); then
+      if ((ans > 0)); then
+        SELECTED_PRESET="${PRESET_DEFINITIONS[$((ans - 1))]}"
+      fi
+      break
+    fi
+    echo "  ! invalid selection" >&2
+  done
+fi
+if [[ -n "$SELECTED_PRESET" ]]; then
+  echo "  -> ${SELECTED_PRESET}"
+else
+  echo "  -> (none)"
+fi
+echo ""
+
+PRESET_RULESETS_DIR=""
+if [[ -n "$SELECTED_PRESET" ]]; then
+  PRESET_RULESETS_DIR="settings/presets/${SELECTED_PRESET}/rulesets"
+fi
+discover_rulesets
+
 build_apply_args() {
   APPLY_ARGS=("$TARGET")
+  if [[ -n "$SELECTED_PRESET" ]]; then
+    APPLY_ARGS+=(--preset "$SELECTED_PRESET")
+  fi
   if ((${#ENABLED_OPTIONAL_RULESETS[@]} > 0)); then
     local joined
     joined="$(
@@ -118,10 +172,10 @@ build_apply_args() {
 ENABLED_OPTIONAL_RULESETS=()
 
 echo "==> Optional rulesets"
-if ((${#OPTIONAL_RULESET_DEFINITIONS[@]} == 0)); then
+if ((${#OPTIONAL_RULESETS[@]} == 0)); then
   echo "  (none)"
 else
-  for def in "${OPTIONAL_RULESET_DEFINITIONS[@]}"; do
+  for def in "${OPTIONAL_RULESETS[@]}"; do
     label="$(ruleset_prompt_label "$def")"
     if prompt_yes_no "  Enable ${label}?" n; then
       ENABLED_OPTIONAL_RULESETS+=("$def")

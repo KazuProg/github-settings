@@ -108,7 +108,7 @@ build_unified_current_json() {
 
 # Build settings.json content with per-repo adjustments applied (private repo, GHAS, etc.).
 build_unified_desired_json() {
-  local settings_file="${SETTINGS_DIR}/settings.json"
+  local settings_file="$SETTINGS_FILE"
   local desired
   desired="$(jq '.' "$settings_file")"
 
@@ -142,7 +142,7 @@ show_unified_dry_run_diff() {
 
 # Omit security_and_analysis on private repos without GitHub Advanced Security.
 build_general_settings_json() {
-  local settings_file="${SETTINGS_DIR}/settings.json"
+  local settings_file="$SETTINGS_FILE"
   if [[ "$(jq -r '.private' <<<"$REPO_JSON")" != "true" ]]; then
     jq '.general' "${settings_file}"
     return
@@ -159,7 +159,7 @@ apply_feature_from_settings() {
   local label="$1"
   local features_key="$2"
   local endpoint="$3"
-  local settings_file="${SETTINGS_DIR}/settings.json"
+  local settings_file="$SETTINGS_FILE"
   local enabled
   enabled="$(jq -r ".features.${features_key} // false" "$settings_file")"
   if [[ "$enabled" == "true" ]]; then
@@ -351,7 +351,7 @@ apply_rulesets_from_settings() {
 
 usage() {
   cat >&2 <<EOF
-Usage: $(basename "$0") <owner>/<repo> [--dry-run] [--with-rulesets <name>[,<name>...]]
+Usage: $(basename "$0") <owner>/<repo> [--preset <name>] [--dry-run] [--no-post-setup] [--with-rulesets <name>[,<name>...]]
 
 Apply repo-setup GitHub repository settings to the target repository.
 
@@ -359,8 +359,20 @@ With --dry-run, no API write is performed. Settings steps show an actual
 diff against the live repository. Enable-only steps report whether each
 feature is already enabled.
 
+Presets (--preset):
+  Subdirectories under settings/presets/ (e.g. "internal-tool"). A preset
+  supplies its own settings.json (deep-merged over settings/settings.json)
+  and optionally rulesets/ and post-setup.sh.
+
 Optional rulesets (--with-rulesets):
-  Basenames under settings/rulesets/ not listed in REQUIRED_RULESETS
+  Basenames under settings/rulesets/ not listed in REQUIRED_RULESETS.
+  When a preset is selected, same-basename files under the preset's
+  rulesets/ override the default definition, but the required / optional
+  set itself comes from settings/rulesets/.
+
+Post-setup:
+  If the selected preset ships an executable post-setup.sh, it runs after
+  the ruleset step. Pass --no-post-setup to skip it.
 
 Feature toggles (immutable releases, private vulnerability reporting,
 Dependabot alerts / security updates) are controlled by the "features"
@@ -378,17 +390,50 @@ EOF
   exit 1
 }
 
+resolve_preset() {
+  local name="$1"
+  local preset_dir="settings/presets/${name}"
+  if [[ ! -d "$preset_dir" ]]; then
+    echo "Error: preset not found: ${name} (expected ${preset_dir})" >&2
+    exit 1
+  fi
+  PRESET_DIR="$preset_dir"
+
+  if [[ -f "${preset_dir}/settings.json" ]]; then
+    SETTINGS_FILE="${preset_dir}/settings.json"
+  fi
+
+  if [[ -d "${preset_dir}/rulesets" ]]; then
+    PRESET_RULESETS_DIR="${preset_dir}/rulesets"
+  fi
+}
+
 TARGET=""
+PRESET=""
 DRY_RUN=false
+NO_POST_SETUP=false
 WITH_RULESETS=()
+RAW_WITH_RULESETS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
   -h | --help)
     usage
     ;;
+  --preset)
+    if [[ $# -lt 2 ]]; then
+      echo "Error: --preset requires a value" >&2
+      exit 1
+    fi
+    PRESET="$2"
+    shift 2
+    ;;
   --dry-run)
     DRY_RUN=true
+    shift
+    ;;
+  --no-post-setup)
+    NO_POST_SETUP=true
     shift
     ;;
   --with-rulesets)
@@ -396,7 +441,11 @@ while [[ $# -gt 0 ]]; do
       echo "Error: --with-rulesets requires a value" >&2
       exit 1
     fi
-    append_with_rulesets "$2"
+    if [[ -n "$RAW_WITH_RULESETS" ]]; then
+      RAW_WITH_RULESETS="${RAW_WITH_RULESETS},$2"
+    else
+      RAW_WITH_RULESETS="$2"
+    fi
     shift 2
     ;;
   --*)
@@ -419,12 +468,26 @@ if [[ -z "$TARGET" ]]; then
   usage
 fi
 
-require_command gh
-require_command jq
-
 if ! [[ "$TARGET" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
   echo "Error: invalid target format. Expected: <owner>/<repo>" >&2
   exit 1
+fi
+
+require_command gh
+require_command jq
+
+SETTINGS_FILE="${SETTINGS_DIR}/settings.json"
+PRESET_DIR=""
+PRESET_RULESETS_DIR=""
+
+if [[ -n "$PRESET" ]]; then
+  resolve_preset "$PRESET"
+fi
+
+discover_rulesets
+
+if [[ -n "$RAW_WITH_RULESETS" ]]; then
+  append_with_rulesets "$RAW_WITH_RULESETS"
 fi
 
 REPO_JSON="$(gh api "repos/${TARGET}" 2>/dev/null)" || {
@@ -436,6 +499,29 @@ REPO_VISIBILITY="public"
 [[ "$(jq -r '.private' <<<"$REPO_JSON")" == "true" ]] && REPO_VISIBILITY="private"
 
 echo "==> Applying repo-setup to: ${TARGET} (${REPO_VISIBILITY})"
+if [[ -n "$PRESET" ]]; then
+  echo "    Preset: ${PRESET}"
+fi
+
+run_post_setup() {
+  local script="${PRESET_DIR}/post-setup.sh"
+  if [[ -z "$PRESET_DIR" ]]; then
+    return
+  fi
+  if [[ ! -e "$script" ]]; then
+    return
+  fi
+  if [[ ! -x "$script" ]]; then
+    echo "Warning: ${script} exists but is not executable; skipping" >&2
+    return
+  fi
+  if $NO_POST_SETUP; then
+    skip_feature "Post-setup (${script})" "(skipped; --no-post-setup)"
+    return
+  fi
+  echo "--> Post-setup (${script})"
+  DRY_RUN="$DRY_RUN" "$script" "$TARGET"
+}
 
 if $DRY_RUN; then
   echo "    DRY-RUN MODE (no API writes)"
@@ -443,11 +529,10 @@ if $DRY_RUN; then
   show_unified_dry_run_diff
   echo "--> Rulesets"
   apply_rulesets_from_settings
+  run_post_setup
   echo "==> Done."
   exit 0
 fi
-
-SETTINGS_FILE="${SETTINGS_DIR}/settings.json"
 
 echo "--> General settings"
 build_general_settings_json | gh api -X PATCH "repos/${TARGET}" --input - >/dev/null
@@ -489,5 +574,7 @@ apply_feature_from_settings \
 
 echo "--> Rulesets"
 apply_rulesets_from_settings
+
+run_post_setup
 
 echo "==> Done."
