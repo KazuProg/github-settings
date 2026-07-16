@@ -21,9 +21,10 @@ GitHub リポジトリの推奨設定を `gh` CLI 経由で一括適用するツ
 
 1. 対象リポジトリ（`owner/repo`）の入力
 2. リポジトリの存在確認（public / private を表示）
-3. 任意 rulesets の有効化確認（リポジトリ単位）
-4. `--dry-run` の実行（任意・デフォルト: はい）
-5. 本番適用の実行（任意・デフォルト: いいえ）
+3. プリセット選択（`settings/presets/` の一覧から選択、または (none)）
+4. 任意 rulesets の有効化確認（リポジトリ単位）
+5. `--dry-run` の実行（任意・デフォルト: はい）
+6. 本番適用の実行（任意・デフォルト: いいえ）
 
 feature の on/off（release immutability、private vulnerability reporting、Dependabot alerts / security updates）は `settings/settings.json` の `features` セクションで宣言的に管理する。
 
@@ -37,20 +38,38 @@ feature の on/off（release immutability、private vulnerability reporting、De
 
 # 設定を適用
 ./apply.sh owner/repo
+
+# プリセットを指定して適用
+./apply.sh owner/repo --preset internal-tool --dry-run
 ```
+
+## プリセット
+
+用途ごとに異なる設定パターンを `settings/presets/<name>/` にまとめておき、`--preset <name>` で選択できる。プリセットが提供する `settings.json` は **完全な設定**（default の全キー + 差分）として扱われ、指定時は default の `settings/settings.json` は読まれない。
+
+プリセットで差し替えられるもの:
+
+- `settings.json` — default `settings/settings.json` の代わりに読まれる（自己完結。default の全キーを含める必要がある）
+- `rulesets/required/*.json` / `rulesets/optional/*.json` — 同名ファイルは default `settings/rulesets/{required,optional}/` を上書き。preset 側にしかないファイルは追加として扱われる（配置先のサブディレクトリで必須 / 任意が決まる）
+- `post-setup.sh` — 実行可能なら Rulesets の後に呼ばれる（`--no-post-setup` でスキップ可能）
+- `preset.json` — プリセットの説明文（`description`）
+
+現在同梱するプリセット:
+
+- `github-flow`: 単一 `main` + Conventional Commits + `cocogitto` 自動リリース運用を想定。`allow_rebase_merge: true`、`default-branch-protection` に `lint-commits` / `no-fixup-commits` / `release` の status check を統合、post-setup で bump-level ラベルを作成
 
 ## 適用される設定（8 ステップ）
 
-| #   | 項目                                                                                                 | 設定ファイル / API                                                |
-| --- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| 1   | 一般設定（Issues、マージ方法、Secret scanning など）                                                 | `settings/settings.json` (`.general`)                             |
-| 2   | Release immutability の有効化（`features.immutable_releases`）                                       | `PUT .../immutable-releases`                                      |
-| 3   | Actions 権限                                                                                         | `settings/settings.json` (`.actions.permissions`)                 |
-| 4   | 許可する Actions（`allowed_actions: selected` の場合）                                               | `settings/settings.json` (`.actions.selected`)                    |
-| 5   | Private vulnerability reporting の有効化（public のみ / `features.private_vulnerability_reporting`） | `PUT .../private-vulnerability-reporting`                         |
-| 6   | Dependabot alerts の有効化（`features.dependabot_alerts`）                                           | `PUT .../vulnerability-alerts`                                    |
-| 7   | Dependabot security updates の有効化（`features.dependabot_security_updates`）                       | `PUT .../automated-security-fixes`                                |
-| 8   | Rulesets                                                                                             | `settings/rulesets/*.json`（常時適用 + `--with-rulesets` で任意） |
+| #   | 項目                                                                                                 | 設定ファイル / API                                                                                               |
+| --- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 1   | 一般設定（Issues、マージ方法、Secret scanning など）                                                 | `settings/settings.json` (`.general`)                                                                            |
+| 2   | Release immutability の有効化（`features.immutable_releases`）                                       | `PUT .../immutable-releases`                                                                                     |
+| 3   | Actions 権限                                                                                         | `settings/settings.json` (`.actions.permissions`)                                                                |
+| 4   | 許可する Actions（`allowed_actions: selected` の場合）                                               | `settings/settings.json` (`.actions.selected`)                                                                   |
+| 5   | Private vulnerability reporting の有効化（public のみ / `features.private_vulnerability_reporting`） | `PUT .../private-vulnerability-reporting`                                                                        |
+| 6   | Dependabot alerts の有効化（`features.dependabot_alerts`）                                           | `PUT .../vulnerability-alerts`                                                                                   |
+| 7   | Dependabot security updates の有効化（`features.dependabot_security_updates`）                       | `PUT .../automated-security-fixes`                                                                               |
+| 8   | Rulesets                                                                                             | `settings/rulesets/required/*.json`（常時適用）+ `settings/rulesets/optional/*.json`（`--with-rulesets` で任意） |
 
 ### 現在の推奨値の概要
 
@@ -76,17 +95,17 @@ feature の on/off（release immutability、private vulnerability reporting、De
 
 **Rulesets**（ステップ 8）
 
-- 常時適用: `settings/rulesets/default-branch-protection.json`
+- 常時適用: `settings/rulesets/required/*.json` に配置したファイル。デフォルトは `default-branch-protection.json` のみ
   - 対象: リポジトリの **default branch**（`~DEFAULT_BRANCH`。`main` 固定ではない）
   - 有効ルール: ブランチ作成・削除・force push 禁止、PR 経由 merge のみ
   - merge 方法: merge commit のみ（一般設定の squash / rebase OFF と揃える）
   - Approve 数 0、レビュースレッド解決必須
-- 任意適用: `settings/rulesets/*.json` のうち `REQUIRED_RULESETS` に含まれないファイル（`--with-rulesets <basename>`）
+- 任意適用: `settings/rulesets/optional/*.json` に配置したファイル（`--with-rulesets <basename>`）
   - 例: `no-fixup-commits.json` — `.github/workflows/no-fixup-commits.yml` を配置したリポジトリ向け
   - default branch への merge 前に `no-fixup-commits` ステータスチェックを必須化
   - 例: `lint-commits.json` — `.github/workflows/lint-commits.yml` を配置したリポジトリ向け
   - default branch への merge 前に `commitlint` ステータスチェックを必須化
-- 常時適用は `rulesets-common.sh` の `REQUIRED_RULESETS`、それ以外は `--with-rulesets <basename>`
+- 必須 / 任意はサブディレクトリで区別する（`required/` = 常時適用、`optional/` = `--with-rulesets` 指定時のみ）
 
 各 JSON の値を編集すれば、適用内容をリポジトリやチームの方針に合わせて変更できる。
 
@@ -146,13 +165,23 @@ lefthook run pre-commit --all-files
 .
 ├── setup.sh              # 対話型セットアップ
 ├── apply.sh              # 設定適用（--dry-run 対応）
-├── rulesets-common.sh    # 常時適用 ruleset 定義（apply.sh / setup.sh 共有）
+├── rulesets-common.sh    # ruleset 検出ヘルパー（apply.sh / setup.sh 共有）
 └── settings/
     ├── settings.json                  # 一般設定 / Actions / features を統合
-    └── rulesets/
-        ├── default-branch-protection.json
-        ├── no-fixup-commits.json  # 任意適用
-        └── lint-commits.json      # 任意適用
+    ├── rulesets/
+    │   ├── required/
+    │   │   └── default-branch-protection.json
+    │   └── optional/
+    │       ├── no-fixup-commits.json
+    │       └── lint-commits.json
+    └── presets/
+        └── github-flow/
+            ├── preset.json
+            ├── settings.json                       # 自己完結の完全な設定
+            ├── post-setup.sh                       # bump-level ラベル作成
+            └── rulesets/
+                └── required/
+                    └── default-branch-protection.json  # status checks 統合版
 ```
 
 ## トラブルシューティング
