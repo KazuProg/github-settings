@@ -4,7 +4,6 @@
       "name": "Default Branch Protection",
       "target": "branch",
       "enforcement": "active",
-      "bypass_actors": [],
       "conditions": {
         "ref_name": {
           "include": ["~DEFAULT_BRANCH"],

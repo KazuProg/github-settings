@@ -240,7 +240,7 @@ show_ruleset_dry_run_diff() {
 upsert_ruleset() {
   local name="$1"
   local json="$2"
-  local existing_id created
+  local existing_id created current_bypass
   existing_id="$(ruleset_id_in_index "$name" "$RULESETS_INDEX")"
 
   if $DRY_RUN; then
@@ -259,6 +259,12 @@ upsert_ruleset() {
     ' <<<"$RULESETS_INDEX")"
     print_status "$COLOR_STATUS_OK" "(created: ${name})"
   else
+    # Preserve manually-managed bypass_actors (e.g. release Deploy Keys) unless
+    # the definition explicitly specifies them; PUT replaces the whole ruleset.
+    if ! jq -e 'has("bypass_actors")' <<<"$json" >/dev/null; then
+      current_bypass="$(gh api "repos/${TARGET}/rulesets/${existing_id}" --jq '.bypass_actors // []')"
+      json="$(jq --argjson bypass_actors "$current_bypass" '. + {bypass_actors: $bypass_actors}' <<<"$json")"
+    fi
     printf '%s' "$json" | gh api -X PUT "repos/${TARGET}/rulesets/${existing_id}" --input - >/dev/null
     print_status "$COLOR_STATUS_OK" "(updated: ${name}, id=${existing_id})"
   fi
