@@ -355,6 +355,90 @@ apply_rulesets_from_settings() {
   fi
 }
 
+# Resolve GitHub usernames to {type, id} reviewer entries for the
+# environments PUT payload.
+resolve_environment_reviewers() {
+  local usernames_json="$1"
+  local username id entries=()
+  while IFS= read -r username; do
+    [[ -z "$username" ]] && continue
+    id="$(gh api "users/${username}" --jq .id)"
+    entries+=("$(jq -n --argjson id "$id" '{type: "User", id: $id}')")
+  done < <(jq -r '.[]' <<<"$usernames_json")
+  printf '%s\n' "${entries[@]}" | jq -s '.'
+}
+
+show_environment_dry_run_diff() {
+  local name="$1"
+  local desired_reviewers="$2"
+  local current current_ids desired_ids
+
+  if ! current="$(gh api "repos/${TARGET}/environments/${name}" 2>/dev/null)"; then
+    print_status "$COLOR_STATUS_WOULD" "(would create: ${name})"
+    return
+  fi
+
+  current_ids="$(jq -cS '[.protection_rules[]? | select(.type == "required_reviewers") | .reviewers[]?.reviewer.id] | sort' <<<"$current")"
+  desired_ids="$(jq -cS '[.[].id] | sort' <<<"$desired_reviewers")"
+
+  if [[ "$current_ids" == "$desired_ids" ]]; then
+    print_status "$COLOR_STATUS_OK" "(no diff: ${name})"
+  else
+    print_status "$COLOR_STATUS_WOULD" "(would update: ${name})"
+  fi
+}
+
+upsert_environment() {
+  local name="$1"
+  local usernames_json="$2"
+  local reviewer_count reviewers_json response
+
+  reviewer_count="$(jq 'length' <<<"$usernames_json")"
+  if [[ "$reviewer_count" -eq 0 ]]; then
+    echo "Error: environment '${name}' has no reviewers configured" >&2
+    echo "Add at least one GitHub username to environments[].reviewers in settings.json before applying (an empty list would create an unprotected environment)" >&2
+    exit 1
+  fi
+
+  reviewers_json="$(resolve_environment_reviewers "$usernames_json")"
+
+  if $DRY_RUN; then
+    show_environment_dry_run_diff "$name" "$reviewers_json"
+    return
+  fi
+
+  if ! response="$(
+    jq -n --argjson reviewers "$reviewers_json" '{reviewers: $reviewers}' |
+      gh api -X PUT "repos/${TARGET}/environments/${name}" --input - 2>&1
+  )"; then
+    if ! is_public_repo; then
+      print_status "$COLOR_STATUS_SKIP" "(skipped; environment protection rules unavailable on this plan for private repos)"
+      return
+    fi
+    echo "Error: failed to configure environment ${name}:" >&2
+    echo "$response" >&2
+    exit 1
+  fi
+  print_status "$COLOR_STATUS_OK" "(created/updated: ${name})"
+}
+
+apply_environments_from_settings() {
+  local settings_file="$SETTINGS_FILE"
+  local count i name reviewers_raw
+  count="$(jq '.environments // [] | length' "$settings_file")"
+  if [[ "$count" -eq 0 ]]; then
+    print_status "$COLOR_STATUS_SKIP" "(no environments configured)"
+    return
+  fi
+
+  for ((i = 0; i < count; i++)); do
+    name="$(jq -r ".environments[$i].name" "$settings_file")"
+    reviewers_raw="$(jq -c ".environments[$i].reviewers // []" "$settings_file")"
+    echo "    ${name}"
+    upsert_environment "$name" "$reviewers_raw"
+  done
+}
+
 usage() {
   cat >&2 <<EOF
 Usage: $(basename "$0") <owner>/<repo> [--preset <name>] [--dry-run] [--no-post-setup] [--with-rulesets <name>[,<name>...]]
@@ -384,6 +468,11 @@ Feature toggles (immutable releases, private vulnerability reporting,
 Dependabot alerts / security updates) are controlled by the "features"
 section of settings/settings.json.
 
+Environments ("environments" array in settings.json): each entry's
+"reviewers" (GitHub usernames) becomes that environment's required
+reviewers. An entry with no reviewers is rejected to avoid creating an
+unprotected environment.
+
 Requires gh (authenticated with the 'repo' scope) and jq.
 The target repository must already exist.
 
@@ -392,6 +481,7 @@ Repository-type skips (reported during apply):
   - Private vulnerability reporting: public repos only
   - Features disabled via settings/settings.json (features.*)
   - Rulesets: skipped on private repos on GitHub Free (requires Pro)
+  - Environments: skipped on private repos without required-reviewers support
 EOF
   exit 1
 }
@@ -535,6 +625,8 @@ if $DRY_RUN; then
   show_unified_dry_run_diff
   echo "--> Rulesets"
   apply_rulesets_from_settings
+  echo "--> Environments"
+  apply_environments_from_settings
   run_post_setup
   echo "==> Done."
   exit 0
@@ -580,6 +672,9 @@ apply_feature_from_settings \
 
 echo "--> Rulesets"
 apply_rulesets_from_settings
+
+echo "--> Environments"
+apply_environments_from_settings
 
 run_post_setup
 
