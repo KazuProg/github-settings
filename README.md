@@ -56,7 +56,7 @@ feature の on/off（release immutability、private vulnerability reporting、De
 
 現在同梱するプリセット:
 
-- `github-flow`: 単一 `main` + Conventional Commits + `cocogitto` 自動リリース運用を想定。`allow_rebase_merge: true`、`default-branch-protection` に `lint-commits` / `no-fixup-commits` / `release` の status check を統合、`release-dispatch` Environment（手動リリースの承認ゲート）を作成、post-setup で bump-level ラベルと release Deploy Key（`RELEASE_DEPLOY_KEY` secret + ruleset bypass 登録）を作成
+- `github-flow`: 単一 `main` + Conventional Commits + `cocogitto` 自動リリース運用を想定。マージ方法(`allow_*_merge` / `allowed_merge_methods`)は省略し GitHub 側の現状を維持、`default-branch-protection` に `lint-commits` / `no-fixup-commits` / `release` の status check を統合、`release-dispatch` Environment（手動リリースの承認ゲート）を作成、post-setup で bump-level ラベルと release Deploy Key（`RELEASE_DEPLOY_KEY` secret + ruleset bypass 登録）を作成
 
 ## 適用される設定（9 ステップ）
 
