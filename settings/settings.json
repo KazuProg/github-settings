@@ -34,5 +34,6 @@
     "private_vulnerability_reporting": true,
     "dependabot_alerts": true,
     "dependabot_security_updates": true
-  }
+  },
+  "environments": []
 }

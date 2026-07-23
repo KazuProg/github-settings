@@ -3,4 +3,4 @@ set -euo pipefail
 
 [[ $# -gt 0 ]] || exit 0
 
-shellcheck --shell=bash "$@"
+shellcheck --shell=bash -x "$@"

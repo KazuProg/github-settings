@@ -56,20 +56,21 @@ feature の on/off（release immutability、private vulnerability reporting、De
 
 現在同梱するプリセット:
 
-- `github-flow`: 単一 `main` + Conventional Commits + `cocogitto` 自動リリース運用を想定。`allow_rebase_merge: true`、`default-branch-protection` に `lint-commits` / `no-fixup-commits` / `release` の status check を統合、post-setup で bump-level ラベルを作成
+- `github-flow`: 単一 `main` + Conventional Commits + `cocogitto` 自動リリース運用を想定。マージ方法(`allow_*_merge` / `allowed_merge_methods`)は省略し GitHub 側の現状を維持、`default-branch-protection` に `lint-commits` / `no-fixup-commits` / `release` の status check を統合、`release-dispatch` Environment（手動リリースの承認ゲート）を作成、post-setup で bump-level ラベルと release Deploy Key（`RELEASE_DEPLOY_KEY` secret + ruleset bypass 登録）を作成
 
-## 適用される設定（8 ステップ）
+## 適用される設定（9 ステップ）
 
 | #   | 項目                                                                                                 | 設定ファイル / API                                                                                               |
 | --- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| 1   | 一般設定（Issues、マージ方法、Secret scanning など）                                                 | `settings/settings.json` (`.general`)                                                                            |
-| 2   | Release immutability の有効化（`features.immutable_releases`）                                       | `PUT .../immutable-releases`                                                                                     |
+| 1   | 一般設定（Issues、マージ方法、Secret scanning など）                                                   | `settings/settings.json` (`.general`)                                                                            |
+| 2   | Release immutability の有効化（`features.immutable_releases`）                                         | `PUT .../immutable-releases`                                                                                     |
 | 3   | Actions 権限                                                                                         | `settings/settings.json` (`.actions.permissions`)                                                                |
-| 4   | 許可する Actions（`allowed_actions: selected` の場合）                                               | `settings/settings.json` (`.actions.selected`)                                                                   |
-| 5   | Private vulnerability reporting の有効化（public のみ / `features.private_vulnerability_reporting`） | `PUT .../private-vulnerability-reporting`                                                                        |
-| 6   | Dependabot alerts の有効化（`features.dependabot_alerts`）                                           | `PUT .../vulnerability-alerts`                                                                                   |
-| 7   | Dependabot security updates の有効化（`features.dependabot_security_updates`）                       | `PUT .../automated-security-fixes`                                                                               |
-| 8   | Rulesets                                                                                             | `settings/rulesets/required/*.json`（常時適用）+ `settings/rulesets/optional/*.json`（`--with-rulesets` で任意） |
+| 4   | 許可する Actions（`allowed_actions: selected` の場合）                                                 | `settings/settings.json` (`.actions.selected`)                                                                   |
+| 5   | Private vulnerability reporting の有効化（public のみ / `features.private_vulnerability_reporting`）   | `PUT .../private-vulnerability-reporting`                                                                        |
+| 6   | Dependabot alerts の有効化（`features.dependabot_alerts`）                                             | `PUT .../vulnerability-alerts`                                                                                   |
+| 7   | Dependabot security updates の有効化（`features.dependabot_security_updates`）                         | `PUT .../automated-security-fixes`                                                                               |
+| 8   | Rulesets                                                                                             | `settings/rulesets/required/*.json`（常時適用）+ `settings/rulesets/optional/*.json`（`--with-rulesets` で任意）     |
+| 9   | Environments（Required reviewers）                                                                     | `settings/settings.json` (`.environments`) → `PUT .../environments/{name}`                                       |
 
 ### 現在の推奨値の概要
 
@@ -106,8 +107,15 @@ feature の on/off（release immutability、private vulnerability reporting、De
   - 例: `lint-commits.json` — `.github/workflows/lint-commits.yml` を配置したリポジトリ向け
   - default branch への merge 前に `commitlint` ステータスチェックを必須化
 - 必須 / 任意はサブディレクトリで区別する（`required/` = 常時適用、`optional/` = `--with-rulesets` 指定時のみ）
+- ruleset の `bypass_actors` は apply 対象外（サーバー側の既存値をそのまま保持する）。手動 / post-setup で登録した bypass actor（Deploy Key 等）は再適用しても消えない
 
 各 JSON の値を編集すれば、適用内容をリポジトリやチームの方針に合わせて変更できる。
+
+**Environments**（ステップ 9、`settings/settings.json` の `.environments`）
+
+- 各エントリの `name` で Environment を作成し、`reviewers`（GitHub username 配列）を Required reviewers として設定する
+- `reviewers` が空のエントリはエラーで停止する（無保護の Environment を誤って作成しないため）
+- default 設定では `environments: []`（未使用）。github-flow プリセットは `release-dispatch` エントリを持つが、`reviewers` は空のプレースホルダーなので導入時に GitHub username を追記する必要がある
 
 ## dry-run の挙動
 
@@ -116,6 +124,7 @@ feature の on/off（release immutability、private vulnerability reporting、De
 - **JSON 設定ステップ（1, 3, 4）**: ライブ API の現在値と `settings/` の desired 値を比較し、差分をカラー diff で表示する。API が返さないフィールドは desired 値で補完して比較する。
 - **有効化のみのステップ（2, 5, 6, 7）**: 各エンドポイントの GET で有効済みかを確認し、`(already enabled)` または `(would enable …)` を表示する。
 - **Rulesets（8）**: `(would create: …)` または `(would update: …, id=…)` を表示する。内容の diff は出さない。
+- **Environments（9）**: Environment 未作成なら `(would create: …)`、Required reviewers が一致していなければ `(would update: …)`、一致していれば `(no diff: …)` を表示する。`reviewers` が空のエントリは dry-run でもエラーで停止する。
 - **スキップされるステップ**: `(skipped; …)` と表示する（後述）。
 
 ## リポジトリ種別による制限とスキップ
@@ -127,9 +136,10 @@ GitHub の制限により、apply 時に一部設定をスキップしたり、a
 | Secret scanning                 | private + GHAS なし   | PATCH から除外                   | スキップ表示、diff に出ない |
 | Private vulnerability reporting | private               | スキップ                         | スキップ表示                |
 | Rulesets                        | private + Free プラン | スキップ                         | スキップ表示                |
+| Environments (Required reviewers) | private + Pro/Team 未満 | スキップ                       | 判定不可(後述)              |
 | `allow_auto_merge`              | private + Free プラン | エラーにならないが GitHub が無視 | diff が残る（無視してよい） |
 
-上表の対象以外（Issues、マージ方法、Actions、Dependabot、release immutability 等）は private でも通常どおり適用される。Rulesets は **public、または Pro 以上の private** でのみ利用可能。
+上表の対象以外（Issues、マージ方法、Actions、Dependabot、release immutability 等）は private でも通常どおり適用される。Rulesets は **public、または Pro 以上の private** でのみ利用可能。Environments の Required reviewers は **public、または Pro(個人)/Team(組織)以上の private** でのみ利用可能。GitHub 側がこの制約に対する具体的なエラー応答を公開していないため、apply 時は書き込み失敗を private リポジトリ限定でプラン制約とみなしてスキップする。dry-run は読み取り専用のため同じ判定ができず、プラン制約で実際にはスキップされるケースも `(would create: …)` と表示されることがある。
 
 Advanced Security が有効な private リポジトリでは、ステップ 1 の `security_and_analysis` も適用される。auto-merge は Pro 以上の private、または public で有効化できる。
 
@@ -178,7 +188,7 @@ lefthook run pre-commit --all-files
         └── github-flow/
             ├── preset.json
             ├── settings.json                       # 自己完結の完全な設定
-            ├── post-setup.sh                       # bump-level ラベル作成
+            ├── post-setup.sh                       # bump-level ラベル + release Deploy Key 作成
             └── rulesets/
                 └── required/
                     └── default-branch-protection.json  # status checks 統合版
